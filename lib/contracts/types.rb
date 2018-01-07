@@ -1,168 +1,204 @@
 module Contracts
-    class Type
-        def &(other)
-            IntersectionType.new([self, other])
-        end
-
-        def |(other)
-            UnionType.new([self, other])
-        end
-    end
-
-    class AnyType < Type
-        def check(x)
-            true
-        end
-    end
-
-    class VoidType < Type
-        def check(x)
-            false
-        end
-    end
-
-    class UnionType < Type
-        def initialize(children)
-            @children = children
-        end
-
-        def check(x)
-            @children.any? do |child|
-                child.check x
+    module Types
+        class Success
+            def and_also
+                yield
             end
-        end
-    end
 
-    class IntersectionType < Type
-        def initialize(children)
-            @children = children
-        end
-
-        def check(x)
-            @children.all? do |child|
-                child.check x
+            def or_else
+                self
             end
-        end
-    end
 
-    class ClassType < Type
-        def initialize(c)
-            @class = c
-        end
-
-        def check(x)
-            @class === x
-        end
-    end
-
-    class MinimumType < ClassType
-        def initialize(minimum)
-            @minimum = minimum
-        end
-
-        def check(x)
-            puts '----'
-            p @minimum
-            puts '----'
-            @minimum <= x
-        end
-    end
-
-    class MaximumType < ClassType
-        def initialize(maximum)
-            @maximum = maximum
-        end
-
-        def check(x)
-            x <= @maximum
-        end
-    end
-
-    class IntegerType < ClassType
-        def initialize(minimum: -1.0/0.0, maximum: 1.0/0.0)
-            super(Integer)
-
-            @minimum = minimum
-            @maximum = maximum
-        end
-
-        def check(x)
-            super(x) && @minimum <= x && x <= @maximum
-        end
-    end
-
-    class StringType < ClassType
-        def initialize(regex: //)
-            super(String)
-
-            @regex = regex
-        end
-
-        def check(x)
-            super(x) && @regex =~ x
-        end
-    end
-
-    class IsType < ClassType
-        def initialize(method)
-            @method = method
-        end
-
-        def check(x)
-            if x.send @method
-                true
-            else
-                false
-            end
-        end
-    end
-
-    class IsNotType < ClassType
-        def initialize(method)
-            @method = method
-        end
-
-        def check(x)
-            if x.send @method
-                false
-            else
+            def success?
                 true
             end
         end
-    end
 
-    class HasType < ClassType
-        def initialize(member, expected_type = AnyType.new)
-            @member = member
-            @expected_type = expected_type
-        end
+        class Failure
+            def initialize(*reasons)
+                @reasons = reasons
+            end
 
-        def check(x)
-            if x.respond_to? @member
-                @expected_type.check(x.send @member)
-            else
+            attr_reader :reasons
+
+            def or_else
+                other = yield
+
+                if other.success?
+                    other
+                else
+                    Failure.new(@reasons + other.reasons)
+                end
+            end
+
+            def success?
                 false
             end
-        end
-    end
 
-    class ValueType < Type
-        def initialize(value)
-            @value = value
+            def and_also
+                self
+            end
         end
 
-        def check(x)
-            x == @value
-        end
-    end
+        class Type
+            def &(other)
+                IntersectionType.new([self, other])
+            end
 
-    class ArrayType < Type
-        def initialize(element_type)
-            @element_type = element_type
+            def |(other)
+                UnionType.new([self, other])
+            end
+
+            def success
+                Success.new
+            end
+
+            def failure(reason)
+                Failure.new reason
+            end
+
+            def assert(message)
+                if yield
+                    success
+                else
+                    failure message
+                end
+            end
         end
 
-        def check(x)
-            Array === x and x.all? { |elt| @element_type.check elt }
+        class AnyType < Type
+            def check(x)
+                success
+            end
+        end
+
+        class VoidType < Type
+            def check(x)
+                failure "#{x.inspect} should be void (which is impossible)"
+            end
+        end
+
+        class UnionType < Type
+            def initialize(children)
+                @children = children
+            end
+
+            def check(x)
+                @children.inject(success) do |result, child|
+                    result.or_else { child.check(x) }
+                end
+            end
+        end
+
+        class IntersectionType < Type
+            def initialize(children)
+                @children = children
+            end
+
+            def check(x)
+                @children.inject(success) do |result, child|
+                    result.and_also { child.check(x) }
+                end
+            end
+        end
+
+        class ClassType < Type
+            def initialize(c)
+                @class = c
+            end
+
+            def check(x)
+                assert("#{x.inspect} should be of class #{@class}") { @class === x }
+            end
+        end
+
+        class MinimumType < Type
+            def initialize(minimum)
+                @minimum = minimum
+            end
+
+            def check(x)
+                assert("#{x.inspect} should not be less than #{@minimum}") { @minimum <= x }
+            end
+        end
+
+        class MaximumType < Type
+            def initialize(maximum)
+                @maximum = maximum
+            end
+
+            def check(x)
+                assert("#{x.inspect} should not be greater than #{@maximum}") { x <= @maximum }
+            end
+        end
+        
+        class RegexType < Type
+            def initialize
+                @regex = regex
+            end
+
+            def check(x)
+                assert("#{x.inspect} should satisfy #{regex.inspect}") { @regex =~ x }
+            end
+        end
+
+        class IsType < Type
+            def initialize(method)
+                @method = method
+            end
+
+            def check(x)
+                assert("#{x.inspect} should be #{@method}") { x.send @method }
+            end
+        end
+
+        class IsNotType < Type
+            def initialize(method)
+                @method = method
+            end
+
+            def check(x)
+                assert("#{x.inspect} should not be #{@method}") { not (x.send @method) }
+            end
+        end
+
+        class HasType < Type
+            def initialize(member, expected_type = AnyType.new)
+                @member = member
+                @expected_type = expected_type
+            end
+
+            def check(x)
+                assert("#{x.inspect} should have member #{@member} with type #{@expected_type}") do
+                    x.respond_to? @member
+                end.and_also do
+                    @expected_type.check(x.send @member)
+                end
+            end
+        end
+
+        class ValueType < Type
+            def initialize(value)
+                @value = value
+            end
+
+            def check(x)
+                assert("#{x.inspect} must be equal to #{@value}") { x == @value }
+            end
+        end
+
+        class ArrayType < Type
+            def initialize(element_type)
+                @element_type = element_type
+            end
+
+            def check(x)
+                assert("#{x.inspect} must be an array") do
+                    Array === x
+                end.and_also do
+                    x.inject(success) { |result, elt| result.and_also { @element_type.check elt } }
+                end
+            end
         end
     end
 
@@ -176,35 +212,44 @@ module Contracts
                 end
             else
                 raise "Missing type" unless type
-                raise "Type class #{type.inspect} should be subclass of type" unless type < Contracts::Type
+                raise "Type class #{type.inspect} should be subclass of type" unless type < Contracts::Types::Type
 
                 add_type(name) { |*args| type.new(*args) }
             end
         end
 
-        add_type :any, AnyType
-        add_type :void, VoidType
-        add_type :string, StringType
-        add_type :is, IsType
-        add_type :is_not, IsNotType
-        add_type :has, HasType
-        add_type :of_class, ClassType
-        add_type :value, ValueType
-        add_type :array, ArrayType
+        add_type :any, Types::AnyType
+        add_type :void, Types::VoidType        
+        add_type :is, Types::IsType
+        add_type :is_not, Types::IsNotType
+        add_type :has, Types::HasType
+        add_type :of_class, Types::ClassType
+        add_type :value, Types::ValueType
+        add_type :array, Types::ArrayType
 
         add_type :one_of do |*values|
-            UnionType.new( values.map { |x| value x } )
+            Types::UnionType.new( values.map { |x| value x } )
         end
 
         add_type :in_range do |minimum: nil, maximum: nil|
             result = any
 
             if minimum
-                result = result & MinimumType.new(minimum)
+                result = result & Types::MinimumType.new(minimum)
             end
 
             if maximum
-                result = result & MaximumType.new(maximum)
+                result = result & Types::MaximumType.new(maximum)
+            end
+
+            result
+        end
+
+        add_type :string do |regex: nil|
+            result = of_class(String)
+            
+            if regex
+                result = result & Types::RegexType.new(regex)
             end
 
             result
